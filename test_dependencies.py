@@ -55,6 +55,13 @@ def test_imports():
         print(f"✗ Failed to import Pydantic: {e}")
         return False
 
+    try:
+        import xgboost
+        print(f"✓ XGBoost version: {xgboost.__version__}")
+    except ImportError as e:
+        print(f"✗ Failed to import XGBoost: {e}")
+        return False
+
     return True
 
 def test_basic_functionality():
