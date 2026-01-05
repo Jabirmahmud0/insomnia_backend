@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import logging
 
 # Configure logging
@@ -19,15 +19,17 @@ class SleepInput(BaseModel):
     Age: int
     Gender: str
     Occupation: str
-    BMI_Category: str
-    Sleep_Duration: float
-    Quality_of_Sleep: int
-    Stress_Level: int
-    Physical_Activity_Level: int
-    Heart_Rate: int
-    Daily_Steps: int
-    Systolic_BP: int
-    Diastolic_BP: int
+    BMI_Category: str = Field(validation_alias="BMI Category")
+    Sleep_Duration: float = Field(validation_alias="Sleep Duration")
+    Quality_of_Sleep: int = Field(validation_alias="Quality of Sleep")
+    Stress_Level: int = Field(validation_alias="Stress Level")
+    Physical_Activity_Level: int = Field(validation_alias="Physical Activity Level")
+    Heart_Rate: int = Field(validation_alias="Heart Rate")
+    Daily_Steps: int = Field(validation_alias="Daily Steps")
+    Systolic_BP: int = Field(validation_alias="Systolic BP")
+    Diastolic_BP: int = Field(validation_alias="Diastolic BP")
+    
+    model_config = {"populate_by_name": True}
 
 # Define the response model
 class PredictionResponse(BaseModel):
@@ -51,6 +53,8 @@ app.add_middleware(
 # Global variables for model artifacts
 rf_model = None
 xgb_model = None
+gb_model = None
+hybrid_stack_model = None
 scaler = None
 encoders = None
 target_encoder = None
@@ -91,6 +95,8 @@ async def load_model_artifacts():
         artifacts_paths = {
             "rf_model": BASE_DIR / "models" / "rf_model.pkl",
             "xgb_model": BASE_DIR / "models" / "xgb_model.pkl",
+            "gb_model": BASE_DIR / "models" / "gb_model.pkl",
+            "hybrid_stack_model": BASE_DIR / "models" / "hybrid_stack_model.pkl",
             "scaler": BASE_DIR / "models" / "scaler.pkl",
             "encoders": BASE_DIR / "models" / "encoders.pkl",
             "target_encoder": BASE_DIR / "models" / "target_encoder.pkl",
@@ -107,8 +113,12 @@ async def load_model_artifacts():
                 raise FileNotFoundError(f"Required file not found: {path}")
         
         # Load all artifacts
+        global rf_model, xgb_model, gb_model, hybrid_stack_model, scaler, encoders, target_encoder, cat_cols, num_cols, feature_order, T_rf, T_ens
+        
         rf_model = joblib.load(artifacts_paths["rf_model"])
         xgb_model = joblib.load(artifacts_paths["xgb_model"])
+        gb_model = joblib.load(artifacts_paths["gb_model"])
+        hybrid_stack_model = joblib.load(artifacts_paths["hybrid_stack_model"])
         scaler = joblib.load(artifacts_paths["scaler"])
         encoders = joblib.load(artifacts_paths["encoders"])
         target_encoder = joblib.load(artifacts_paths["target_encoder"])
@@ -127,55 +137,60 @@ async def load_model_artifacts():
 def preprocess_input(data: SleepInput):
     """Preprocess input data for prediction"""
     try:
-        # Convert input data to dictionary with correct column names
+        import pandas as pd
+        
+        # Create DataFrame with exact column names
         input_dict = {
             'Age': data.Age,
             'Gender': data.Gender,
             'Occupation': data.Occupation,
-            'BMI Category': data.BMI_Category,  # Space instead of underscore
-            'Sleep Duration': data.Sleep_Duration,  # Spaces instead of underscores
-            'Quality of Sleep': data.Quality_of_Sleep,  # Spaces instead of underscores
-            'Stress Level': data.Stress_Level,  # Spaces instead of underscores
-            'Physical Activity Level': data.Physical_Activity_Level,  # Spaces instead of underscores
-            'Heart Rate': data.Heart_Rate,  # Spaces instead of underscores
-            'Daily Steps': data.Daily_Steps,  # Spaces instead of underscores
-            'Systolic_BP': data.Systolic_BP,  # Underscore as in model
-            'Diastolic_BP': data.Diastolic_BP  # Underscore as in model
+            'BMI Category': data.BMI_Category,
+            'Sleep Duration': data.Sleep_Duration,
+            'Quality of Sleep': data.Quality_of_Sleep,
+            'Stress Level': data.Stress_Level,
+            'Physical Activity Level': data.Physical_Activity_Level,
+            'Heart Rate': data.Heart_Rate,
+            'Daily Steps': data.Daily_Steps,
+            'Systolic_BP': data.Systolic_BP,
+            'Diastolic_BP': data.Diastolic_BP
         }
         
-        # Create DataFrame with single row
-        import pandas as pd
         df = pd.DataFrame([input_dict])
         
-        # Compute Cardio_Load_Index exactly as:
-        # Pulse_Pressure = Systolic_BP - Diastolic_BP
-        # Mean_Arterial_Pressure = Diastolic_BP + Pulse_Pressure / 3
-        # Cardio_Load_Index = Heart_Rate * Mean_Arterial_Pressure
+        # Feature Engineering
         pulse_pressure = df['Systolic_BP'] - df['Diastolic_BP']
         mean_arterial_pressure = df['Diastolic_BP'] + pulse_pressure / 3
         df['Cardio_Load_Index'] = df['Heart Rate'] * mean_arterial_pressure
         
-        # Compute Stress_Sleep_Index
-        # This is a composite metric combining stress and sleep quality
-        df['Stress_Sleep_Index'] = df['Stress Level'] * (6 - df['Quality of Sleep'])  # Higher stress and lower sleep quality = higher index
+        # Compute Stress_Sleep_Index BEFORE encoding (using original values)
+        df['Stress_Sleep_Index'] = df['Stress Level'] * (6 - df['Quality of Sleep'])
         
-        # Process categorical columns
+        # Encode categorical columns
         for col in cat_cols:
             if col in df.columns:
                 encoder = encoders[col]
-                df[col] = encoder.transform(df[col])
+                try:
+                    df[col] = encoder.transform(df[col].astype(str))
+                except ValueError as e:
+                    print(f"Warning: Unseen category in {col}: {df[col].values[0]}")
+                    df[col] = 0
         
-        # Process numerical columns
-        if len(num_cols) > 0:
-            df[num_cols] = scaler.transform(df[num_cols])
+        # For models that expect 14 features, we need to include Stress_Sleep_Index in the scaling
+        # Create the complete feature set including Stress_Sleep_Index
+        all_feature_cols = list(scaler.feature_names_in_) + ['Stress_Sleep_Index']
+        df_complete = df[all_feature_cols]
         
-        # Reorder columns to match feature_order exactly
-        df = df[feature_order]
+        # Scale only the original 13 features, leave Stress_Sleep_Index unscaled
+        original_features_scaled = scaler.transform(df_complete[list(scaler.feature_names_in_)])
         
-        # Assert that the final DataFrame columns match feature_order exactly
-        assert list(df.columns) == feature_order, f"Column mismatch: got {list(df.columns)}, expected {feature_order}"
+        # Combine scaled original features with unscaled Stress_Sleep_Index
+        df_scaled = pd.DataFrame(original_features_scaled, columns=list(scaler.feature_names_in_))
+        df_scaled['Stress_Sleep_Index'] = df_complete['Stress_Sleep_Index'].values
         
-        return df.values
+        # Reorder to match the expected feature order (this should have 14 features for XGBoost compatibility)
+        df_final = df_scaled[all_feature_cols]
+        
+        return df_final.values
         
     except Exception as e:
         raise ValueError(f"Error in preprocessing: {str(e)}")
@@ -185,20 +200,29 @@ async def predict_sleep_disorder(data: SleepInput):
     """Predict sleep disorder based on input data using ensemble of RF and XGB models"""
     try:
         # Check if models are loaded
-        if rf_model is None or xgb_model is None:
+        if rf_model is None or xgb_model is None or gb_model is None or hybrid_stack_model is None:
             raise HTTPException(status_code=500, detail="Models not loaded")
         
         # Preprocess input data
         X_preprocessed = preprocess_input(data)
         
-        # Compute RF probabilities
-        rf_proba = rf_model.predict_proba(X_preprocessed)
+        # Compute RF probabilities (expects 13 features)
+        X_rf = X_preprocessed[:, :13]  # Use first 13 features for RF
+        rf_proba = rf_model.predict_proba(X_rf)
         
-        # Compute XGB probabilities
+        # Compute XGB probabilities (expects 14 features)
         xgb_proba = xgb_model.predict_proba(X_preprocessed)
         
+        # Compute GB probabilities (expects 13 features)
+        X_gb = X_preprocessed[:, :13]  # Use first 13 features for GB
+        gb_proba = gb_model.predict_proba(X_gb)
+        
+        # Compute hybrid stack model probabilities (expects 13 features)
+        X_hybrid = X_preprocessed[:, :13]  # Use first 13 features for hybrid
+        hybrid_proba = hybrid_stack_model.predict_proba(X_hybrid)
+        
         # Compute raw ensemble probabilities
-        ens_proba_raw = (rf_proba + xgb_proba) / 2.0
+        ens_proba_raw = (rf_proba + xgb_proba + gb_proba + hybrid_proba) / 4.0
         
         # Apply temperature scaling
         rf_proba_cal = apply_temperature_scaling_probs(rf_proba, T_rf)
@@ -236,10 +260,14 @@ async def health_check():
     """Health check endpoint"""
     rf_status = "loaded" if rf_model is not None else "not loaded"
     xgb_status = "loaded" if xgb_model is not None else "not loaded"
+    gb_status = "loaded" if gb_model is not None else "not loaded"
+    hybrid_status = "loaded" if hybrid_stack_model is not None else "not loaded"
     return {
         "status": "healthy",
         "rf_model_status": rf_status,
-        "xgb_model_status": xgb_status
+        "xgb_model_status": xgb_status,
+        "gb_model_status": gb_status,
+        "hybrid_stack_model_status": hybrid_status
     }
 
 if __name__ == "__main__":
