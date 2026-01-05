@@ -42,9 +42,10 @@ class PredictionResponse(BaseModel):
 app = FastAPI(title="Sleep Disorder Prediction API", version="1.0.0")
 
 # Add CORS middleware
+frontend_url = os.getenv("FRONTEND_URL", "*")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for development
+    allow_origins=[frontend_url] if frontend_url != "*" else ["*"],  # Use specific origin or allow all
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -272,4 +273,5 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)

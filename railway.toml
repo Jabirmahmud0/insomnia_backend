@@ -1,0 +1,20 @@
+# Railway Configuration File
+[build]
+builder = "NIXPACKS"
+
+[build.nixpacks]
+phases.setup = '''
+  runHook preBuild
+  export PYTHONPATH=$PYTHONPATH:$(pwd)
+  echo "Python version: $(python --version)"
+  pip install --upgrade pip
+  pip install -r requirements.txt
+  runHook postBuild
+'''
+
+[build.nixpacks.variables]
+PYTHON_VERSION = "3.11"
+
+[deploy]
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
