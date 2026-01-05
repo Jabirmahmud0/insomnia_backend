@@ -3,7 +3,7 @@ app = "insomnia-backend"
 primary_region = "sin"
 
 [build]
-  builder = "paketobuildpacks/builder:python"
+  dockerfile = "Dockerfile"
 
 [env]
   PORT = "8080"
