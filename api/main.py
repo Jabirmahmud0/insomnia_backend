@@ -86,9 +86,25 @@ def apply_temperature_scaling_probs(probs, T):
     scaled_probs = softmax_logits(scaled_logits)
     return scaled_probs
 
-@app.on_event("startup")
+# Global variables for model artifacts
+rf_model = None
+xgb_model = None
+gb_model = None
+hybrid_stack_model = None
+scaler = None
+encoders = None
+target_encoder = None
+cat_cols = None
+num_cols = None
+feature_order = None
+T_rf = None
+T_ens = None
+
+app.state.models_loaded = False
+
+# Load models at startup
 async def load_model_artifacts():
-    """Load all model artifacts at startup"""
+    """Load all model artifacts"""
     global rf_model, xgb_model, scaler, encoders, target_encoder, cat_cols, num_cols, feature_order, T_rf, T_ens
     
     try:
@@ -130,10 +146,16 @@ async def load_model_artifacts():
         T_ens = joblib.load(artifacts_paths["T_ens"])
         
         logger.info("All model artifacts loaded successfully!")
+        app.state.models_loaded = True
         
     except Exception as e:
         logger.error(f"Failed to load model artifacts: {str(e)}")
-        raise RuntimeError(f"Failed to load model artifacts: {str(e)}")
+        logger.warning("App starting without models - upload models to /app/models directory")
+        app.state.models_loaded = False
+
+# Call the model loading function at startup
+import asyncio
+asyncio.create_task(load_model_artifacts())
 
 def preprocess_input(data: SleepInput):
     """Preprocess input data for prediction"""
@@ -201,6 +223,8 @@ async def predict_sleep_disorder(data: SleepInput):
     """Predict sleep disorder based on input data using ensemble of RF and XGB models"""
     try:
         # Check if models are loaded
+        if not getattr(app.state, "models_loaded", True):
+            raise HTTPException(status_code=500, detail="Models not loaded - please upload model files to /app/models directory")
         if rf_model is None or xgb_model is None or gb_model is None or hybrid_stack_model is None:
             raise HTTPException(status_code=500, detail="Models not loaded")
         
