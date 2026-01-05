@@ -1,8 +1,4 @@
-"""
-Entry point for the Sleep Disorder Prediction API.
-This file imports and runs the FastAPI application from the api module.
-"""
-
+# Server entry point for Fly.io
 from api.main import app
 
 if __name__ == "__main__":
